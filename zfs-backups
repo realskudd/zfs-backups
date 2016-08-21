@@ -1,0 +1,59 @@
+#!/bin/bash
+
+touchfile=/var/run/zfs-backups
+keepMax=30
+
+if [[ -f $touchfile ]]
+then
+	echo "Touch file exists at $touchfile. If process is not running, remove file and try again"
+	exit
+fi
+
+touch $touchfile
+now=$(date)
+
+echo "Starting at $now..."
+
+hostList=$(cat /root/bin/zfs-backups.hosts)
+
+for h in $hostList
+do 
+	now=$(date)
+	echo "Backing up $h at $now..."
+	ssh root@$h 'sync >/dev/null 2>&1' 2>/dev/null
+	time rsync -a --exclude 'backup' --exclude 'dev' --exclude 'sys' --exclude 'proc' --delete root@$h:/ /backup/$h/
+
+	#echo "Backing up $h /backup now..."
+	#time rsync -a --delete root@$h:/backup /backup/$h-backups/
+
+	now=$(date)
+	echo "Creating snapshot at $now..."
+	/sbin/zfs snapshot backup/$h@`date +%Y-%m-%d-%H:%M:%S`
+
+	#/sbin/zfs snapshot /backup/$h-backups@`date +%Y-%m-%d-%H:%M:%S`
+done
+
+now=$(date)
+echo "Backing up localhost at $now..."
+sync >/dev/null 2>&1
+time rsync -a --exclude 'backup' --exclude 'dev' --exclude 'sys' --exclude 'proc' --exclude 'raid' --delete / /backup/hydrogen/
+
+now=$(date)
+echo "Creating snapshot at $now..."
+/sbin/zfs snapshot backup/hydrogen@`date +%Y-%m-%d-%H:%M:%S`
+
+now=$(date)
+echo "Cleaning up old snapshots at $now..."
+for h in `cat /root/bin/zfs-backups.hosts `
+do
+	/sbin/zfs list -t snapshot | grep $h | grep -v backups | grep -v sticky | awk '{print $1}' | sort | head -n -$keepMax | xargs -n 1 /sbin/zfs destroy
+	#/sbin/zfs list -t snapshot | grep $h-backups | awk '{print $1}' | sort | head -n -12 | xargs -n 1 /sbin/zfs destroy
+done
+
+h=hydrogen
+/sbin/zfs list -t snapshot | grep $h | awk '{print $1}' | sort | head -n -$keepMax | xargs -n 1 /sbin/zfs destroy
+
+now=$(date)
+echo "Finished at $now!"
+
+rm -f $touchfile
